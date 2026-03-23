@@ -10,3 +10,4 @@ tensorboard_3d
 screenshots
 output
 *__pycache__*
+wandb
