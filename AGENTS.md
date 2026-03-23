@@ -35,6 +35,7 @@ If the task is about LoD scheduling, probability loss, or multi-resolution camer
 - The uncertainty signal is always measured on the finest configured scale, which is the first element of `--resolution_scales`.
 - The current implementation uses a fixed probe set of training views instead of a single random probe view.
 - For each scheduler check, the code renders all probe views at the finest scale and averages their probability losses.
+- The uncertainty probe now uses stable `model_id`-driven ensemble members rather than fresh uncontrolled resampling on every probe render.
 - The rendered probability loss uses:
   - `forward_k_times(...)`
   - `nll_kernel_density(...)`
@@ -76,7 +77,7 @@ This means:
 - The optimization loss still uses:
   - image reconstruction term
   - KL-based variational regularizers
-- The LoD scheduler uses a separate uncertainty-aware probe based on finest-scale Monte Carlo rendering.
+- The LoD scheduler uses a separate uncertainty-aware probe based on finest-scale ensemble rendering.
 
 ## Draft bidirectional LoD behavior
 
@@ -98,6 +99,9 @@ This means:
 - `_validate_probability_lod_thresholds(...)`
 - `_maybe_update_lod_scale(...)`
 - `_compute_probability_probe_loss(...)`
+- `_active_member_ids(...)`
+- `_stable_member_uniform(...)`
+- `_stable_member_normal(...)`
 - `_maybe_update_bidirectional_lod_scale(...)`
 - `training(...)`
 - `training_report(...)`

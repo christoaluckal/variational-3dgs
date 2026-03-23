@@ -135,6 +135,28 @@ class GaussianModel:
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
+    def _active_member_ids(self):
+        start_id = int(self.model_id) % self.n_models
+        member_offsets = torch.arange(self.M, device=self._xyz.device)
+        return (start_id + member_offsets) % self.n_models
+
+    def _stable_member_uniform(self, reference_tensor, stream_id):
+        if reference_tensor.numel() == 0:
+            return torch.empty_like(reference_tensor)
+
+        flat_index = torch.arange(
+            reference_tensor.numel(), device=reference_tensor.device, dtype=torch.float32
+        )
+        seed = float((int(self.model_id) % self.n_models) + 1 + 104729 * stream_id)
+        values = torch.sin(flat_index * 12.9898 + seed * 78.233) * 43758.5453
+        values = values - torch.floor(values)
+        return values.reshape(reference_tensor.shape).to(reference_tensor.dtype)
+
+    def _stable_member_normal(self, reference_tensor, stream_id):
+        uniform = self._stable_member_uniform(reference_tensor, stream_id)
+        uniform = uniform.to(torch.float32).clamp_(1e-6, 1.0 - 1e-6)
+        normal = np.sqrt(2.0) * torch.erfinv(2.0 * uniform - 1.0)
+        return normal.to(reference_tensor.dtype)
 
     @property
     def get_scaling(self): 
@@ -143,13 +165,13 @@ class GaussianModel:
 
     def compute_scal(self): 
         scal = self._scaling
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+        sample_model_ids = self._active_member_ids()
 
         width = self.offsets["_scaling_offset"][...,sample_model_ids].mean(dim=-1)
         width = torch.nn.functional.softplus(width).clamp_(1e-2, 1e2)
         left = self.offsets["_scaling_offset"][...,sample_model_ids+self.n_models].mean(dim=-1)
 
-        offset_scal = (width) * torch.rand_like(scal) + left
+        offset_scal = (width) * self._stable_member_uniform(scal, stream_id=1) + left
         offset_scal = self.mr_list*offset_scal+(1-self.mr_list)* torch.ones_like(offset_scal).cuda().requires_grad_(True)
 
         scal = scal * offset_scal
@@ -184,7 +206,7 @@ class GaussianModel:
         xyz = self.compute_xyz()
         return xyz
     def compute_xyz(self):
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+        sample_model_ids = self._active_member_ids()
         xyz = self._xyz
 
         std = self.offsets["_xyz_offset"][..., sample_model_ids].mean(dim=-1)
@@ -192,7 +214,7 @@ class GaussianModel:
 
         mean = self.offsets["_xyz_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
 
-        offset = torch.randn_like(xyz).cuda().requires_grad_(True)
+        offset = self._stable_member_normal(xyz, stream_id=2)
         offset = offset*std+mean
 
         xyz = xyz + self.mr_list*offset
@@ -224,12 +246,12 @@ class GaussianModel:
     @property
     def get_opacity(self): 
         opacity = self.compute_opacity()
-        sample_model_ids = torch.randperm(self.n_models)[:self.M].cuda().requires_grad_(False).detach()
+        sample_model_ids = self._active_member_ids()
         std = self.offsets["_opacity_offset"][..., sample_model_ids].mean(dim=-1)
         std = torch.nn.functional.softplus(std)
         mean = self.offsets["_opacity_offset"][..., sample_model_ids+self.n_models].mean(dim=-1)
 
-        p_logit = (std*torch.randn_like(opacity).cuda().requires_grad_(True) + mean)
+        p_logit = (std*self._stable_member_normal(opacity, stream_id=3) + mean)
         offset_opc = torch.sigmoid(p_logit / self.tmp)
         offset_opc = self.mr_list*offset_opc+(1-self.mr_list)*torch.ones_like(offset_opc).cuda().requires_grad_(True)
 

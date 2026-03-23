@@ -39,7 +39,8 @@ The first element of `--resolution_scales` is treated as the finest reference sc
 - That same index is available at every resolution scale.
 - The active render for gradient descent uses the current LoD scale.
 - Periodically, a fixed small probe set of canonical training views is rendered at the finest scale with `forward_k_times(...)`.
-- Each finest-scale Monte Carlo render produces:
+- `forward_k_times(...)` now evaluates stable `model_id`-driven ensemble members instead of relying on fresh uncontrolled resampling for every probe sample.
+- Each finest-scale ensemble render produces:
   - per-sample RGBs
   - predictive standard deviation
 - `nll_kernel_density(...)` converts each probe view output into a probability loss.
@@ -181,6 +182,12 @@ The current implementation makes that controller more robust in three ways:
 - it averages probe losses across that set before updating the EMA
 - it uses a warmup median baseline instead of a one-shot baseline
 
+It also makes the per-probe uncertainty estimate more comparable over time:
+
+- `model_id` now selects stable ensemble members
+- repeated probe calls evaluate the same ensemble members again instead of fresh random resamples
+- changes in probe loss therefore reflect model changes more than probe-sampling drift
+
 ## Why the finest scale drives promotion
 
 Using the finest configured scale for the uncertainty probe keeps promotion decisions tied to the highest-detail target the model must eventually fit.
@@ -192,6 +199,22 @@ That avoids a common failure mode where:
 - finer-scale uncertainty is still high
 
 By measuring uncertainty at scale `2`, the LoD routine promotes only after the model becomes more certain on the sharpest scheduled supervision.
+
+## Stable ensemble members
+
+The current codebase no longer treats the uncertainty probe as pure fresh Monte Carlo resampling on every call.
+
+Instead:
+
+- each render sample in `forward_k_times(...)` corresponds to a stable `model_id`
+- `model_id` is now threaded into Gaussian sampling so scale, xyz, and opacity perturbations are repeatable for that member
+- the scheduler probe is therefore a consistent finite-ensemble estimate rather than a moving target dominated by fresh draw noise
+
+This is mainly a controller-stability change:
+
+- training still samples one active member per iteration for optimization
+- the probe now compares like with like across iterations
+- that usually makes `probability_probe_loss` and its EMA easier to interpret
 
 ## Runner integration
 

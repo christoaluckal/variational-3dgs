@@ -38,6 +38,7 @@ Unlike the current `train.py` scheduler, the draft does not reverse the list for
 - The probe uses:
   - `forward_k_times(...)`
   - `nll_kernel_density(...)`
+- `forward_k_times(...)` now evaluates stable `model_id`-driven ensemble members, so repeated probe checks are more comparable over time.
 - The finest-scale probability loss is smoothed with an EMA.
 
 ## State machine
