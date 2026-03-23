@@ -4,26 +4,26 @@
 
 This document outlines design considerations, caveats, and practical guidelines for using uncertainty-driven Level-of-Detail (LoD) scheduling in Gaussian splatting training.
 
-Two approaches are considered:
+Two approaches are relevant in this folder:
 
 1. **Coarse-to-fine (unidirectional)**  
    Start at low resolution and promote when uncertainty decreases.
 
-2. **Bidirectional (experimental)**  
+2. **Bidirectional (experimental draft)**  
    Allow fallback to lower resolution when uncertainty increases.
 
-The bidirectional approach is currently hypothetical and has not yet been validated.
+The bidirectional approach is documented as a draft in `train_bidirectional_lod.py` and has not yet been validated as the default training policy.
 
 ---
 
 # Core Concept
 
-Training is performed at the **active LoD scale**, but scheduling decisions are driven by a **finest-scale Monte Carlo uncertainty probe**.
+Training is performed at the **active LoD scale**, but scheduling decisions are driven by a **finest-scale ensemble uncertainty probe**.
 
 This introduces a separation:
 
 - **Optimization signal** → active-scale reconstruction + regularization
-- **Control signal** → finest-scale uncertainty (MC NLL)
+- **Control signal** → finest-scale uncertainty probe (`forward_k_times(...)` + `nll_kernel_density(...)`)
 
 This separation is powerful but introduces risks.
 
@@ -47,25 +47,27 @@ Switching decisions may not correlate with final quality.
 
 ## 2. Baseline Sensitivity (Regular Mode)
 
-The promotion threshold is anchored to an **initial baseline uncertainty value**.
+The regular scheduler is anchored to an **early warmup baseline** rather than a one-shot first probe.
 
 ### Implications
-- A noisy initial estimate biases all future decisions.
-- Early randomness propagates through the entire curriculum.
+- The warmup median is more robust than a one-shot baseline.
+- But the chosen warmup window still anchors all future promotions.
 
 ### Risk
 - Too-early or too-late promotions
 - Strong seed sensitivity
+- Thresholds that still need retuning when scenes differ substantially
 
 ---
 
-## 3. Monte Carlo Noise in the Controller
+## 3. Limited-Sample Noise in the Controller
 
-Uncertainty is estimated via multi-sample rendering.
+Uncertainty is estimated via a finite ensemble render on a fixed probe set.
 
 ### Implications
-- High variance signal
-- EMA smoothing only partially helps
+- The controller is more stable than pure fresh MC resampling.
+- But it still depends on a small number of probe views and a finite number of ensemble members.
+- EMA smoothing only partially helps.
 
 ### Risk
 - False triggers (especially dangerous for bidirectional fallback)
@@ -75,15 +77,15 @@ Uncertainty is estimated via multi-sample rendering.
 
 ## 4. Viewpoint Bias
 
-Scheduler decisions may depend on a **single sampled view**.
+Scheduler decisions no longer depend on a single sampled view, but they still depend on a **small fixed probe set**.
 
 ### Implications
-- Hard views can dominate scheduling
-- Control becomes view-dependent rather than model-dependent
+- Hard views can still dominate if the probe set is not representative.
+- Control can become probe-set-dependent rather than scene-dependent.
 
 ### Risk
 - Inconsistent transition timing
-- Overreaction to difficult viewpoints
+- Overreaction to difficult viewpoints if they are overrepresented in the probe set
 
 ---
 
@@ -177,6 +179,7 @@ Recovery thresholds tied to fallback entry point.
 
 - Use a fixed set of canonical probe views
 - Average multiple views per probe
+- Prefer stable ensemble members over fresh uncontrolled resampling for controller decisions
 - Use EMA + additional smoothing if needed
 - Increase robustness for fallback triggers
 
@@ -187,10 +190,16 @@ Recovery thresholds tied to fallback entry point.
 Log at every LoD transition:
 
 - active scale
-- uncertainty (raw + EMA)
+- uncertainty probe loss (raw + EMA)
+- uncertainty probe spread
 - validation PSNR / L1
 - gaussian count
 - recent structural events
+
+Current code also writes:
+
+- `train_metrics.csv`
+- `eval_metrics.csv`
 
 Track:
 - per-view uncertainty

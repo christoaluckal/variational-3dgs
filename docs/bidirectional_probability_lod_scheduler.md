@@ -4,7 +4,7 @@
 
 This document describes the draft alternative training routine in:
 
-- [`train_bidirectional_lod.py`](/home/christoa/Workspace/splatting/variational-3dgs/train_bidirectional_lod.py)
+- [`train_bidirectional_lod.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_bidirectional_lod.py)
 
 It is intentionally separate from the current scheduler in `train.py`.
 
@@ -91,7 +91,7 @@ This also matches the requested behavior of validating improvement from the fine
 
 - `train.py` is one-way coarse-to-fine.
 - `train_bidirectional_lod.py` is fine-first, then coarse-to-fine only when degradation is detected.
-- `train.py` uses an initial baseline and only checks whether EMA falls below baseline-scaled thresholds.
+- `train.py` uses a warmup baseline built from early fixed-view probe measurements and checks whether EMA falls below baseline-scaled thresholds.
 - `train_bidirectional_lod.py` uses:
   - best-so-far EMA to detect degradation
   - recovery-entry EMA as the anchor for reintroducing finer levels
@@ -105,6 +105,6 @@ This also matches the requested behavior of validating improvement from the fine
 
 ## Recommended files to compare
 
-- [`train.py`](/home/christoa/Workspace/splatting/variational-3dgs/train.py)
-- [`train_bidirectional_lod.py`](/home/christoa/Workspace/splatting/variational-3dgs/train_bidirectional_lod.py)
-- [`docs/probability_lod_scheduler.md`](/home/christoa/Workspace/splatting/variational-3dgs/docs/probability_lod_scheduler.md)
+- [`train.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train.py)
+- [`train_bidirectional_lod.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_bidirectional_lod.py)
+- [`docs/probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/probability_lod_scheduler.md)

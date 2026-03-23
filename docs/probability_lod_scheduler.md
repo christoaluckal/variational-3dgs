@@ -2,8 +2,8 @@
 
 For the separate draft alternative that starts at the finest scale and only falls back to coarser scales when finest-scale probability loss degrades, see:
 
-- [`train_bidirectional_lod.py`](/home/christoa/Workspace/splatting/variational-3dgs/train_bidirectional_lod.py)
-- [`bidirectional_probability_lod_scheduler.md`](/home/christoa/Workspace/splatting/variational-3dgs/docs/bidirectional_probability_lod_scheduler.md)
+- [`train_bidirectional_lod.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_bidirectional_lod.py)
+- [`bidirectional_probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/bidirectional_probability_lod_scheduler.md)
 
 ## Goal
 
@@ -13,6 +13,12 @@ This training routine combines two ideas:
 - coarse-to-fine level-of-detail training
 
 The optimization step renders at the current LoD scale, but the decision to move to a finer scale is based on uncertainty measured at the finest configured training scale.
+
+The current implementation is no longer the original one-shot / single-view scheduler. It now uses:
+
+- a fixed small probe set of canonical views
+- stable `model_id`-driven ensemble members for the uncertainty probe
+- a warmup median baseline instead of a one-shot baseline
 
 ## Resolution semantics
 
@@ -188,6 +194,80 @@ It also makes the per-probe uncertainty estimate more comparable over time:
 - repeated probe calls evaluate the same ensemble members again instead of fresh random resamples
 - changes in probe loss therefore reflect model changes more than probe-sampling drift
 
+## Interpreting Probe Metrics
+
+`probability_probe_loss` is a calibration-style score, not a reconstruction loss.
+
+That means it is not expected to move in lockstep with:
+
+- photometric loss
+- total training loss
+- PSNR
+- L1
+
+The probe is computed with `nll_kernel_density(...)`, which depends on both:
+
+- the mean prediction error
+- the predicted standard deviation across probe samples
+
+So the metric answers a different question:
+
+- not "how sharp is the mean render?"
+- but "how well does the predicted uncertainty match the remaining error?"
+
+### Why `probability_probe_loss` can rise while image quality improves
+
+This usually indicates growing overconfidence.
+
+Typical pattern:
+
+1. the mean render keeps improving
+2. residual error becomes smaller but does not vanish
+3. predicted uncertainty shrinks even faster
+4. the NLL-style probe penalizes the model for being too certain about still-imperfect pixels
+
+As a result:
+
+- photometric loss may go down
+- total loss may go down
+- PSNR may go up
+- `probability_probe_loss` may still rise
+
+### Why higher `probability_probe_loss_std` can sometimes help
+
+Higher `probability_probe_loss_std` means the ensemble members disagree more on the probe views.
+
+That is not automatically good or bad.
+
+It can improve the probe loss when the model was previously underestimating uncertainty:
+
+- if the mean render still has noticeable error
+- and the ensemble spread was too tight
+- then a larger predictive standard deviation can make the prediction better calibrated
+
+In that case:
+
+- `probability_probe_loss_std` may increase
+- `probability_probe_loss` may decrease
+- eval metrics may also improve if the mean render improved at the same time
+
+This does not mean "more uncertainty is always better."
+
+It means:
+
+- too little uncertainty is penalized when the mean prediction is still wrong
+- the best probe score occurs when uncertainty matches the true residual error scale
+
+### Practical reading guide
+
+Use the metrics this way:
+
+- `photometric_loss`, `L1`, and `PSNR` track mean-render quality
+- `probability_probe_loss` tracks calibration of the predictive distribution
+- `probability_probe_loss_std` tracks ensemble spread on the fixed probe set
+
+Because they measure different things, inverse trends between them are possible and expected.
+
 ## Why the finest scale drives promotion
 
 Using the finest configured scale for the uncertainty probe keeps promotion decisions tied to the highest-detail target the model must eventually fit.
@@ -218,7 +298,7 @@ This is mainly a controller-stability change:
 
 ## Runner integration
 
-[`run_exp.py`](/home/christoa/Workspace/splatting/variational-3dgs/run_exp.py) now forwards the scheduler robustness settings explicitly for experiment runs:
+[`run_exp.py`](/mnt/share/nas/christo/splatting/variational-3dgs/run_exp.py) now forwards the scheduler robustness settings explicitly for experiment runs:
 
 - `--probability_lod_interval 50`
 - `--probability_lod_min_iterations 1000`
@@ -228,10 +308,33 @@ This is mainly a controller-stability change:
 
 It also supports optional per-experiment `probability_lod_thresholds` entries if you want to hard-code threshold schedules for selected runs.
 
+## Logging Outputs
+
+The current code logs the scheduler and training signals in three places:
+
+- WandB:
+  - `train/photometric_loss`
+  - `train/total_loss`
+  - `train/kl_scale_loss`
+  - `train/probability_probe_loss`
+  - `train/probability_probe_loss_std`
+  - `train/lod_scale`
+- TensorBoard:
+  - `probability_probe_loss`
+  - `probability_probe_loss_ema`
+  - `total_loss`
+  - `kl_scale_loss`
+- Per-run CSV files in the output directory:
+  - `train_metrics.csv`
+  - `eval_metrics.csv`
+
+These CSV files make the scheduler behavior inspectable without relying on WandB.
+
 ## Files involved
 
-- [`train.py`](/home/christoa/Workspace/splatting/variational-3dgs/train.py)
-- [`run_exp.py`](/home/christoa/Workspace/splatting/variational-3dgs/run_exp.py)
-- [`gaussian_renderer/__init__.py`](/home/christoa/Workspace/splatting/variational-3dgs/gaussian_renderer/__init__.py)
-- [`scene/__init__.py`](/home/christoa/Workspace/splatting/variational-3dgs/scene/__init__.py)
-- [`utils/image_utils.py`](/home/christoa/Workspace/splatting/variational-3dgs/utils/image_utils.py)
+- [`train.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train.py)
+- [`run_exp.py`](/mnt/share/nas/christo/splatting/variational-3dgs/run_exp.py)
+- [`gaussian_renderer/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/gaussian_renderer/__init__.py)
+- [`scene/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/scene/__init__.py)
+- [`scene/gaussian_model.py`](/mnt/share/nas/christo/splatting/variational-3dgs/scene/gaussian_model.py)
+- [`utils/image_utils.py`](/mnt/share/nas/christo/splatting/variational-3dgs/utils/image_utils.py)

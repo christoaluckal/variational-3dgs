@@ -219,6 +219,21 @@ def _uncertainty_to_viridis_image(uncertainty_tensor):
     return mapped.reshape(*normalized.shape, 3).permute(2, 0, 1)
 
 
+def _initialize_csv_logger(csv_path, fieldnames):
+    if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+        return
+
+    with open(csv_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+
+def _append_csv_row(csv_path, fieldnames, row):
+    with open(csv_path, "a", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writerow(row)
+
+
 def _compute_probability_probe_loss(
     viewpoint_dict,
     finest_scale,
@@ -284,6 +299,33 @@ def training(
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+    train_csv_fields = [
+        "iteration",
+        "photometric_loss",
+        "total_loss",
+        "kl_scale_loss",
+        "kl_xyz_loss",
+        "kl_opacity_loss",
+        "probability_regularizer",
+        "probability_probe_loss",
+        "probability_probe_loss_std",
+        "probability_probe_loss_ema",
+        "lod_scale",
+        "num_gaussians",
+        "iter_time_ms",
+    ]
+    eval_csv_fields = [
+        "iteration",
+        "split",
+        "eval_scale",
+        "num_cameras",
+        "l1",
+        "psnr",
+    ]
+    train_metrics_csv = os.path.join(dataset.model_path, "train_metrics.csv")
+    eval_metrics_csv = os.path.join(dataset.model_path, "eval_metrics.csv")
+    _initialize_csv_logger(train_metrics_csv, train_csv_fields)
+    _initialize_csv_logger(eval_metrics_csv, eval_csv_fields)
     gaussians = GaussianModel(dataset)
     scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
     gaussians.training_setup(opt)
@@ -415,6 +457,26 @@ def training(
                     train_log["train/probability_probe_loss_std"] = probability_loss_std
                 wandb.log(train_log, step=iteration)
 
+            _append_csv_row(
+                train_metrics_csv,
+                train_csv_fields,
+                {
+                    "iteration": iteration,
+                    "photometric_loss": Ll1.item(),
+                    "total_loss": loss.item(),
+                    "kl_scale_loss": loss_kl_scal.item(),
+                    "kl_xyz_loss": loss_kl_xyz.item(),
+                    "kl_opacity_loss": loss_kl_opacity.item(),
+                    "probability_regularizer": probability_regularizer.item(),
+                    "probability_probe_loss": None if probability_loss is None else probability_loss.item(),
+                    "probability_probe_loss_std": probability_loss_std,
+                    "probability_probe_loss_ema": lod_state["ema_probability_loss"],
+                    "lod_scale": current_scale,
+                    "num_gaussians": gaussians.get_xyz.shape[0],
+                    "iter_time_ms": iter_start.elapsed_time(iter_end),
+                },
+            )
+
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
@@ -451,6 +513,8 @@ def training(
                 probability_loss,
                 lod_state["ema_probability_loss"],
                 fixed_wandb_eval_view,
+                eval_metrics_csv,
+                eval_csv_fields,
             )
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -526,6 +590,8 @@ def training_report(
     probability_loss,
     ema_probability_loss,
     fixed_wandb_eval_view,
+    eval_metrics_csv,
+    eval_csv_fields,
 ):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
@@ -562,6 +628,18 @@ def training_report(
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                _append_csv_row(
+                    eval_metrics_csv,
+                    eval_csv_fields,
+                    {
+                        "iteration": iteration,
+                        "split": config["name"],
+                        "eval_scale": eval_scale,
+                        "num_cameras": len(config["cameras"]),
+                        "l1": l1_test.item(),
+                        "psnr": psnr_test.item(),
+                    },
+                )
                 if WANDB_FOUND and wandb.run is not None and config['name'] == 'test':
                     eval_log = {
                         "eval/L1": l1_test.item(),

@@ -8,13 +8,14 @@ Use this file as the quick handoff for training behavior in this folder, especia
 
 If the task is about LoD scheduling, probability loss, or multi-resolution camera usage, begin with:
 
-- [`train.py`](/home/christoa/Workspace/splatting/variational-3dgs/train.py)
-- [`train_bidirectional_lod.py`](/home/christoa/Workspace/splatting/variational-3dgs/train_bidirectional_lod.py)
-- [`scene/__init__.py`](/home/christoa/Workspace/splatting/variational-3dgs/scene/__init__.py)
-- [`utils/camera_utils.py`](/home/christoa/Workspace/splatting/variational-3dgs/utils/camera_utils.py)
-- [`gaussian_renderer/__init__.py`](/home/christoa/Workspace/splatting/variational-3dgs/gaussian_renderer/__init__.py)
-- [`docs/probability_lod_scheduler.md`](/home/christoa/Workspace/splatting/variational-3dgs/docs/probability_lod_scheduler.md)
-- [`docs/bidirectional_probability_lod_scheduler.md`](/home/christoa/Workspace/splatting/variational-3dgs/docs/bidirectional_probability_lod_scheduler.md)
+- [`train.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train.py)
+- [`train_bidirectional_lod.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_bidirectional_lod.py)
+- [`scene/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/scene/__init__.py)
+- [`utils/camera_utils.py`](/mnt/share/nas/christo/splatting/variational-3dgs/utils/camera_utils.py)
+- [`gaussian_renderer/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/gaussian_renderer/__init__.py)
+- [`docs/probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/probability_lod_scheduler.md)
+- [`docs/bidirectional_probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/bidirectional_probability_lod_scheduler.md)
+- [`docs/caveats.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/caveats.md)
 
 ## Current training behavior
 
@@ -79,6 +80,30 @@ This means:
   - KL-based variational regularizers
 - The LoD scheduler uses a separate uncertainty-aware probe based on finest-scale ensemble rendering.
 
+## How to Read Probe Metrics
+
+- `probability_probe_loss` is a calibration signal, not a reconstruction signal.
+- It depends on both mean error and predicted uncertainty.
+- It can increase even while photometric loss and PSNR improve if the model becomes overconfident.
+- `probability_probe_loss_std` measures ensemble spread on the fixed probe set.
+- A rise in `probability_probe_loss_std` can sometimes reduce `probability_probe_loss` if the model was previously underestimating uncertainty.
+- Higher probe spread is not automatically better; the best probe score happens when uncertainty matches the remaining residual error.
+
+## Current Logging Outputs
+
+- WandB train logs include:
+  - `train/photometric_loss`
+  - `train/total_loss`
+  - `train/kl_scale_loss`
+  - `train/probability_probe_loss`
+  - `train/probability_probe_loss_std`
+  - `train/lod_scale`
+- TensorBoard uses the same naming for the probe metrics and also logs `probability_probe_loss_ema`.
+- Each run output directory now also contains:
+  - `train_metrics.csv`
+  - `eval_metrics.csv`
+- Final render-set summaries are still appended to the dataset-level evaluation CSV.
+
 ## Draft bidirectional LoD behavior
 
 - `train_bidirectional_lod.py` is a draft alternative scheduler and does not change `train.py`.
@@ -112,6 +137,7 @@ This means:
 - The probability probe uses `forward_k_times(...)`, so it is more expensive than a normal single render.
 - It currently runs every `--probability_lod_interval` iterations.
 - It now probes multiple fixed views per scheduler check, which improves robustness but increases probe cost.
+- The scheduler is more stable than the old one-shot / one-view version, but it is still driven by a limited probe set rather than full-scene validation.
 - Evaluation and final rendering now use the finest configured scale instead of assuming scale `1.0`.
 
 ## Runner defaults
