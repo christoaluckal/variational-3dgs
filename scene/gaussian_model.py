@@ -39,6 +39,13 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
+    def _set_num_models(self, n_models):
+        n_models = int(n_models)
+        if n_models < 1:
+            raise ValueError(f"num_models must be at least 1, got {n_models}.")
+        self.n_models = n_models
+        self.M = min(2, self.n_models)
+
     def __init__(self, dataset): 
         self.active_sh_degree = 0
         self.max_sh_degree = dataset.sh_degree  
@@ -59,10 +66,9 @@ class GaussianModel:
         self._feat_unc = torch.empty(0)
         self.model_id = 0
 
-        self.n_models = 10
+        self._set_num_models(getattr(dataset, "num_models", 6))
         self.pri_std = -6
         self.pri_width = 0.1
-        self.M = 2
 
         self.pri_opacity_std = 1.85
         self.pri_opacity_mean = 2
@@ -88,21 +94,42 @@ class GaussianModel:
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scalar,
+            self.n_models,
         )
     
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self.max_radii2D, 
-        xyz_gradient_accum, 
-        denom,
-        opt_dict, 
-        self.spatial_lr_scalar) = model_args
+        if len(model_args) == 13:
+            (self.active_sh_degree, 
+            self._xyz, 
+            self._features_dc, 
+            self._features_rest,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            self.max_radii2D, 
+            xyz_gradient_accum, 
+            denom,
+            opt_dict, 
+            self.spatial_lr_scalar,
+            n_models) = model_args
+            self._set_num_models(n_models)
+        elif len(model_args) == 12:
+            (self.active_sh_degree, 
+            self._xyz, 
+            self._features_dc, 
+            self._features_rest,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            self.max_radii2D, 
+            xyz_gradient_accum, 
+            denom,
+            opt_dict, 
+            self.spatial_lr_scalar) = model_args
+        else:
+            raise ValueError(
+                f"Unsupported GaussianModel checkpoint format with {len(model_args)} entries."
+            )
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -467,6 +494,9 @@ class GaussianModel:
         for idx, attr_name in enumerate(opacity_offset_names):
             opacity_offset[:, idx] = np.asarray(plydata.elements[0][attr_name])
         opacity_offset = opacity_offset.reshape((opacity_offset.shape[0], 1, len(opacity_offset_names)))
+
+        loaded_n_models = xyz_offset.shape[2] // 2
+        self._set_num_models(loaded_n_models)
 
         self.offsets["_xyz_offset"] = nn.Parameter(torch.tensor(xyz_offset, dtype=torch.float, device="cuda").requires_grad_(True))
         self.offsets["_scaling_offset"] = nn.Parameter(torch.tensor(scaling_offset, dtype=torch.float, device="cuda").requires_grad_(True))

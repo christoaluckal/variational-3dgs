@@ -42,18 +42,34 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if args.dataset_name == "LF":
+        source_has_sparse = os.path.exists(os.path.join(args.source_path, "sparse"))
+        source_has_blender_transforms = os.path.exists(os.path.join(args.source_path, "transforms_train.json"))
+        dataset_name = args.dataset_name.lower()
+
+        if dataset_name == "lf":
             scene_info = sceneLoadTypeCallbacks["LF"](args.source_path, args.images, args.eval)
             self.dataset_name = "LF"
-        elif os.path.exists(os.path.join(args.source_path, "sparse")):
+        elif dataset_name in {"colmap", "auto"} and source_has_sparse:
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval)
             self.dataset_name = "colmap"
-        elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
+        elif dataset_name in {"blender", "auto"} and source_has_blender_transforms:
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
             self.dataset_name = "blender"
+        elif dataset_name == "colmap":
+            raise AssertionError(
+                f"dataset_name=colmap but no COLMAP sparse model was found under {args.source_path}"
+            )
+        elif dataset_name == "blender":
+            raise AssertionError(
+                f"dataset_name=blender but no transforms_train.json was found under {args.source_path}"
+            )
         else:
-            assert False, "Could not recognize scene type!"
+            raise AssertionError(
+                "Could not recognize scene type. "
+                "Expected a COLMAP scene with a 'sparse' directory, a Blender scene with "
+                "'transforms_train.json', or use '--dataset_name LF' for the LF-specific loader."
+            )
         self.depth_scale = scene_info.depth_scale
 
         if not self.loaded_iter:
