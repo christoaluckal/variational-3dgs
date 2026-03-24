@@ -9,11 +9,13 @@ Use this file as the quick handoff for training behavior in this folder, especia
 If the task is about LoD scheduling, probability loss, or multi-resolution camera usage, begin with:
 
 - [`train.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train.py)
+- [`train_vanilla.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_vanilla.py)
 - [`train_bidirectional_lod.py`](/mnt/share/nas/christo/splatting/variational-3dgs/train_bidirectional_lod.py)
 - [`scene/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/scene/__init__.py)
 - [`utils/camera_utils.py`](/mnt/share/nas/christo/splatting/variational-3dgs/utils/camera_utils.py)
 - [`gaussian_renderer/__init__.py`](/mnt/share/nas/christo/splatting/variational-3dgs/gaussian_renderer/__init__.py)
 - [`docs/probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/probability_lod_scheduler.md)
+- [`docs/naive_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/naive_lod_scheduler.md)
 - [`docs/bidirectional_probability_lod_scheduler.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/bidirectional_probability_lod_scheduler.md)
 - [`docs/caveats.md`](/mnt/share/nas/christo/splatting/variational-3dgs/docs/caveats.md)
 
@@ -50,6 +52,8 @@ If the task is about LoD scheduling, probability loss, or multi-resolution camer
 ## Relevant CLI controls
 
 - `--resolution_scales`
+- `--match_resolution`
+- `--probability_regularizer_weight`
 - `--probability_lod_thresholds`
 - `--probability_lod_interval`
 - `--probability_lod_min_iterations`
@@ -60,6 +64,7 @@ If the task is about LoD scheduling, probability loss, or multi-resolution camer
 Example with defaults:
 
 - `--resolution_scales 2 4 8`
+- `--probability_regularizer_weight 1.0`
 - `--probability_lod_thresholds 0.5 0.3`
 - `--probability_lod_probe_num_views 4`
 - `--probability_lod_baseline_warmup_probes 5`
@@ -72,12 +77,19 @@ This means:
 - move to scale `4` when probability-loss EMA is below `0.5 * baseline`
 - move to scale `2` when probability-loss EMA is below `0.3 * baseline`
 
+If `--match_resolution` is enabled:
+
+- lower LoD scales are still loaded from downsampled images
+- but they are resized back to the finest training resolution before creating the `Camera`
+- the effective difference between LoD levels becomes blur/detail rather than image size
+
 ## Important implementation detail
 
 - The probability-loss probe is not the same tensor as the optimization loss used for backprop each iteration.
 - The optimization loss still uses:
   - image reconstruction term
   - KL-based variational regularizers
+- The KL regularizer block can be globally scaled with `--probability_regularizer_weight`.
 - The LoD scheduler uses a separate uncertainty-aware probe based on finest-scale ensemble rendering.
 
 ## How to Read Probe Metrics
@@ -94,14 +106,27 @@ This means:
 - WandB train logs include:
   - `train/photometric_loss`
   - `train/total_loss`
-  - `train/kl_scale_loss`
+  - `train/kl_loss`
   - `train/probability_probe_loss`
   - `train/probability_probe_loss_std`
   - `train/lod_scale`
+- `train_bidirectional_lod.py` also logs:
+  - `train/kl_scale_loss`
+  - `train/probability_probe_loss_ema`
+  - `train/probability_probe_loss_best_ema`
+  - `train/lod_mode`
 - TensorBoard uses the same naming for the probe metrics and also logs `probability_probe_loss_ema`.
 - Each run output directory now also contains:
   - `train_metrics.csv`
   - `eval_metrics.csv`
+- `train_metrics.csv` is the most complete per-iteration record and includes:
+  - `kl_scale_loss`
+  - `kl_xyz_loss`
+  - `kl_opacity_loss`
+  - `probability_regularizer`
+  - `probability_probe_loss`
+  - `probability_probe_loss_std`
+  - `probability_probe_loss_ema`
 - Final render-set summaries are still appended to the dataset-level evaluation CSV.
 
 ## Draft bidirectional LoD behavior
@@ -114,6 +139,19 @@ This means:
   - then promote back toward finer scales as finest-scale probability loss improves
 - Recovery is considered complete only after the finest-scale EMA improves enough again.
 - Validation and reporting still use the finest configured scale.
+
+## Naive LoD behavior
+
+- `train_vanilla.py` is a deterministic baseline with no probability-driven switching.
+- It still uses coarse-to-fine ordering by reversing `--resolution_scales`.
+- Promotions happen at fixed stage boundaries:
+  - `stage_idx = floor((iteration - 1) / --naive_lod_stage_iterations)`
+- Example:
+  - `--resolution_scales 2 4 8 --naive_lod_stage_iterations 5000`
+  - scale `8` for iterations `1..5000`
+  - scale `4` for iterations `5001..10000`
+  - scale `2` for iterations `10001+`
+- It uses the same training loss, CSV outputs, evaluation path, and optional `--match_resolution` behavior as the other entrypoints.
 
 ## Files and functions to check before editing
 
@@ -142,9 +180,27 @@ This means:
 
 ## Runner defaults
 
-- `run_exp.py` now forwards the scheduler robustness settings explicitly:
+- `run_exp.py` now defines three regular-training variants:
+  - `baseline`
+  - `lod`
+  - `matched-lod`
+- `baseline` runs do not use LoD and only use `--probability_regularizer_weight 1.0`.
+- `lod` and `matched-lod` sweep:
+  - `--probability_regularizer_weight 1.0`
+  - `--probability_regularizer_weight 0.5`
+  - `--probability_regularizer_weight 0.1`
+- `matched-lod` enables `--match_resolution`, so coarse levels are blurred-but-same-size rather than smaller tensors.
+- `run_exp.py` forwards the scheduler robustness settings explicitly:
+  - `--probability_lod_interval 50`
+  - `--probability_lod_min_iterations 1000`
+  - `--probability_loss_ema_alpha 0.2`
+  - `--probability_lod_probe_num_views 4`
+  - `--probability_lod_baseline_warmup_probes 5`
+- `run_exp_bi.py` uses the draft bidirectional routine with:
   - `--probability_lod_interval 50`
   - `--probability_lod_min_iterations 1000`
   - `--probability_loss_ema_alpha 0.1`
   - `--probability_lod_probe_num_views 4`
-  - `--probability_lod_baseline_warmup_probes 5`
+  - `--probability_lod_increase_ratio 1.05`
+  - `--probability_lod_increase_patience 2`
+  - `MATCH_RESOLUTION = False` in the runner by default

@@ -35,11 +35,13 @@ Unlike the current `train.py` scheduler, the draft does not reverse the list for
 - The same index is reused across all configured scales.
 - The optimization loss is computed at the currently active scale.
 - The uncertainty probe is always computed on the finest configured scale.
+- The same `--match_resolution` option exists here too, so lower LoD levels can optionally be blurrier views at the finest training tensor size.
 - The probe uses:
   - `forward_k_times(...)`
   - `nll_kernel_density(...)`
 - `forward_k_times(...)` now evaluates stable `model_id`-driven ensemble members, so repeated probe checks are more comparable over time.
 - The finest-scale probability loss is smoothed with an EMA.
+- The backpropagated KL regularizer block is still separate from the probe and can be scaled with `--probability_regularizer_weight`.
 
 ## State machine
 
@@ -96,11 +98,29 @@ This also matches the requested behavior of validating improvement from the fine
   - best-so-far EMA to detect degradation
   - recovery-entry EMA as the anchor for reintroducing finer levels
 
+## Logging and Outputs
+
+The draft routine follows the same general logging structure as `train.py`:
+
+- WandB logs training loss and probe metrics
+- per-run CSV files are written to the output directory
+  - `train_metrics.csv`
+  - `eval_metrics.csv`
+
+The bidirectional train log additionally tracks controller state:
+
+- `train/lod_mode`
+- `train/probability_probe_loss_ema`
+- `train/probability_probe_loss_best_ema`
+
+This is important when analyzing whether a fallback was driven by real degradation or controller noise.
+
 ## Caveats
 
 - This is a draft scheduler, not the established default behavior.
 - Densification and pruning still operate on the active training render, so changing scales mid-training can alter those signals.
 - The probability probe remains relatively expensive because it uses `forward_k_times(...)`.
+- The bidirectional runner does not currently sweep `--probability_regularizer_weight`; that argument still exists in the training script and defaults to `1.0` unless passed explicitly.
 - Threshold defaults are heuristic and would likely need tuning per dataset.
 
 ## Recommended files to compare

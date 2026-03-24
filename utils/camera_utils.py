@@ -17,30 +17,48 @@ import torch.nn.functional as F
 
 WARNED = False
 
-def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+def _compute_resolution(args, orig_w, orig_h, resolution_scale):
+    global WARNED
 
     if args.resolution in [1, 2, 4, 8]:
-        resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
-    else:  # should be a type that converts to float
-        if args.resolution == -1:
-            effective_w = orig_w / float(resolution_scale)
-            if effective_w > 1600:
-                global WARNED
-                if not WARNED:
-                    print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
-                        "If this is not desired, please explicitly specify '--resolution/-r' as 1")
-                    WARNED = True
-                global_down = effective_w / 1600
-            else:
-                global_down = 1
+        return (
+            round(orig_w / (resolution_scale * args.resolution)),
+            round(orig_h / (resolution_scale * args.resolution)),
+        )
+
+    if args.resolution == -1:
+        effective_w = orig_w / float(resolution_scale)
+        if effective_w > 1600:
+            if not WARNED:
+                print("[ INFO ] Encountered quite large input images (>1.6K pixels width), rescaling to 1.6K.\n "
+                    "If this is not desired, please explicitly specify '--resolution/-r' as 1")
+                WARNED = True
+            global_down = effective_w / 1600
         else:
-            global_down = orig_w / args.resolution
+            global_down = 1
+    else:
+        global_down = orig_w / args.resolution
 
-        scale = float(global_down) * float(resolution_scale)
-        resolution = (int(orig_w / scale), int(orig_h / scale))
+    scale = float(global_down) * float(resolution_scale)
+    return (int(orig_w / scale), int(orig_h / scale))
 
+
+def loadCam(args, id, cam_info, resolution_scale, reference_resolution_scale=None):
+    orig_w, orig_h = cam_info.image.size
+    if reference_resolution_scale is None:
+        reference_resolution_scale = resolution_scale
+
+    resolution = _compute_resolution(args, orig_w, orig_h, resolution_scale)
+    target_resolution = _compute_resolution(args, orig_w, orig_h, reference_resolution_scale)
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+
+    if getattr(args, "match_resolution", False) and resolution != target_resolution:
+        resized_image_rgb = F.interpolate(
+            resized_image_rgb[None, ...],
+            size=(target_resolution[1], target_resolution[0]),
+            mode="bilinear",
+            align_corners=False,
+        )[0]
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
@@ -49,7 +67,20 @@ def loadCam(args, id, cam_info, resolution_scale):
         loaded_mask = resized_image_rgb[3:4, ...]
 
     if cam_info.depth is not None:
-        depth = F.interpolate(cam_info.depth[None, ...], size=(resolution[1], resolution[0]), mode='bilinear', align_corners=False)[0,0]
+        depth = F.interpolate(
+            cam_info.depth[None, ...],
+            size=(resolution[1], resolution[0]),
+            mode='bilinear',
+            align_corners=False,
+        )
+        if getattr(args, "match_resolution", False) and resolution != target_resolution:
+            depth = F.interpolate(
+                depth,
+                size=(target_resolution[1], target_resolution[0]),
+                mode='bilinear',
+                align_corners=False,
+            )
+        depth = depth[0, 0]
     else:
         depth = None
 
@@ -58,11 +89,11 @@ def loadCam(args, id, cam_info, resolution_scale):
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, depth=depth, uid=id, data_device=args.data_device)
 
-def cameraList_from_camInfos(cam_infos, resolution_scale, args):
+def cameraList_from_camInfos(cam_infos, resolution_scale, args, reference_resolution_scale=None):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
-        camera_list.append(loadCam(args, id, c, resolution_scale))
+        camera_list.append(loadCam(args, id, c, resolution_scale, reference_resolution_scale))
 
     return camera_list
 

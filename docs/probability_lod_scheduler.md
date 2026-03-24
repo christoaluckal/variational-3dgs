@@ -19,6 +19,7 @@ The current implementation is no longer the original one-shot / single-view sche
 - a fixed small probe set of canonical views
 - stable `model_id`-driven ensemble members for the uncertainty probe
 - a warmup median baseline instead of a one-shot baseline
+- an optional `--match_resolution` mode so coarse levels can be blur-only rather than smaller tensors
 
 ## Resolution semantics
 
@@ -38,6 +39,12 @@ Internally, training order is:
 3. scale `2`
 
 The first element of `--resolution_scales` is treated as the finest reference scale for uncertainty evaluation.
+
+If `--match_resolution` is enabled, all LoD levels are resized back to the finest training resolution after loading. In that mode:
+
+- coarse LoD levels still come from lower-resolution source images
+- but they are upsampled to the finest training size before rendering
+- the LoD difference is therefore blur/detail rather than tensor shape
 
 ## Core interaction
 
@@ -173,6 +180,12 @@ The optimization loss includes the variational regularizers:
 
 These are part of the backpropagated training loss every iteration.
 
+The combined KL block is also scaled by:
+
+- `--probability_regularizer_weight`
+
+This is a loss weight, not a separate optimizer learning rate. Lowering it slows how strongly the variational regularizer shapes training.
+
 ### 2. Scheduling probe
 
 The LoD scheduler uses:
@@ -253,6 +266,68 @@ In that case:
 
 This does not mean "more uncertainty is always better."
 
+It means the probe favors calibration:
+
+- too little spread can hurt because the model is overconfident
+- too much spread can also hurt because the predictive distribution becomes too diffuse
+- the best probe score appears when the ensemble spread matches the remaining residual error
+
+## Logging Outputs
+
+Current `train.py` logging distinguishes the training objective from the scheduler probe.
+
+WandB train logs include:
+
+- `train/photometric_loss`
+- `train/total_loss`
+- `train/kl_loss`
+- `train/probability_probe_loss`
+- `train/probability_probe_loss_std`
+- `train/lod_scale`
+
+The per-run CSV output is more detailed:
+
+- `train_metrics.csv`
+- `eval_metrics.csv`
+
+`train_metrics.csv` also includes:
+
+- `kl_scale_loss`
+- `kl_xyz_loss`
+- `kl_opacity_loss`
+- `probability_regularizer`
+- `probability_probe_loss_ema`
+
+This matters because the scheduler probe is not the same term that enters the optimizer.
+
+## Runner Integration
+
+`run_exp.py` currently defines three experiment families:
+
+- `baseline`
+- `lod`
+- `matched-lod`
+
+Their meanings are:
+
+- `baseline`: single fixed scale, no LoD progression
+- `lod`: regular coarse-to-fine LoD training
+- `matched-lod`: regular coarse-to-fine LoD training with `--match_resolution`
+
+Current regular-runner defaults are:
+
+- `--probability_lod_interval 50`
+- `--probability_lod_min_iterations 1000`
+- `--probability_loss_ema_alpha 0.2`
+- `--probability_lod_probe_num_views 4`
+- `--probability_lod_baseline_warmup_probes 5`
+
+KL-weight sweep behavior in `run_exp.py`:
+
+- `baseline` uses only `--probability_regularizer_weight 1.0`
+- `lod` sweeps `1.0`, `0.5`, `0.1`
+- `matched-lod` sweeps `1.0`, `0.5`, `0.1`
+
 It means:
 
 - too little uncertainty is penalized when the mean prediction is still wrong
@@ -329,6 +404,23 @@ The current code logs the scheduler and training signals in three places:
   - `eval_metrics.csv`
 
 These CSV files make the scheduler behavior inspectable without relying on WandB.
+
+## Match-Resolution Option
+
+The camera-loading path supports:
+
+- `--match_resolution`
+
+When enabled:
+
+- the first scale in `--resolution_scales` still defines the target training size
+- lower scales are first downsampled according to their scale factor
+- then resized back to that target size
+
+This is useful when you want:
+
+- the same render tensor size at every LoD level
+- lower LoD levels to behave like blurred supervision instead of genuinely smaller images
 
 ## Files involved
 

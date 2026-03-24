@@ -96,6 +96,7 @@ LoD switching occurs alongside:
 - Pruning
 - Opacity resets
 - SH degree increases
+- Changes in `--probability_regularizer_weight`
 
 ### Implications
 Multiple factors affect performance simultaneously.
@@ -192,6 +193,7 @@ Log at every LoD transition:
 - active scale
 - uncertainty probe loss (raw + EMA)
 - uncertainty probe spread
+- probability regularizer strength and value
 - validation PSNR / L1
 - gaussian count
 - recent structural events
@@ -204,6 +206,17 @@ Current code also writes:
 Track:
 - per-view uncertainty
 - transition timing vs quality changes
+
+Useful current fields include:
+
+- `total_loss`
+- `kl_scale_loss`
+- `kl_xyz_loss`
+- `kl_opacity_loss`
+- `probability_regularizer`
+- `probability_probe_loss`
+- `probability_probe_loss_std`
+- `probability_probe_loss_ema`
 
 ---
 

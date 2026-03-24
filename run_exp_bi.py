@@ -3,12 +3,19 @@ import sys
 
 
 SOURCE_PATH = "../Splat-20250821T013834Z-1-001/Splat/scene"
-WANDB_PROJECT = "variational-3dgs"
+WANDB_PROJECT = "variational-3dgs-v3"
+PROBABILITY_LOD_INTERVAL = 50
+PROBABILITY_LOD_MIN_ITERATIONS = 1000
+PROBABILITY_LOSS_EMA_ALPHA = 0.1
+PROBABILITY_LOD_PROBE_NUM_VIEWS = 4
+PROBABILITY_LOD_INCREASE_RATIO = 1.05
+PROBABILITY_LOD_INCREASE_PATIENCE = 2
+MATCH_RESOLUTION = False
 
 
 EXPERIMENTS = [
     {"label": "baseline", "start_scale": 2, "resolution_scales": [2]},
-    # {"label": "lod", "start_scale": 2, "resolution_scales": [2, 4, 8]},
+    {"label": "lod", "start_scale": 2, "resolution_scales": [2, 4, 8]},
     # {"label": "baseline", "start_scale": 4, "resolution_scales": [4]},
     # {"label": "lod", "start_scale": 4, "resolution_scales": [4, 8]},
     # {"label": "baseline", "start_scale": 8, "resolution_scales": [8]},
@@ -19,12 +26,12 @@ NUM_MODELS = [3, 6]
 
 
 def build_experiment_name(experiment, num_models):
-    return f"home-{experiment['label']}-r{experiment['start_scale']}-m{num_models}"
+    return f"new-home-bi-{experiment['label']}-r{experiment['start_scale']}-m{num_models}"
 
 
 def build_command(experiment, num_models):
     experiment_name = build_experiment_name(experiment, num_models)
-    return [
+    command = [
         sys.executable,
         "train_bidirectional_lod.py",
         "-s",
@@ -35,12 +42,34 @@ def build_command(experiment, num_models):
         *[str(scale) for scale in experiment["resolution_scales"]],
         "--num_models",
         str(num_models),
+        "--probability_lod_interval",
+        str(PROBABILITY_LOD_INTERVAL),
+        "--probability_lod_min_iterations",
+        str(PROBABILITY_LOD_MIN_ITERATIONS),
+        "--probability_loss_ema_alpha",
+        str(PROBABILITY_LOSS_EMA_ALPHA),
+        "--probability_lod_probe_num_views",
+        str(PROBABILITY_LOD_PROBE_NUM_VIEWS),
+        "--probability_lod_increase_ratio",
+        str(PROBABILITY_LOD_INCREASE_RATIO),
+        "--probability_lod_increase_patience",
+        str(PROBABILITY_LOD_INCREASE_PATIENCE),
         "--wandb_project",
         WANDB_PROJECT,
         "--wandb_name",
         experiment_name,
         "--eval",
     ]
+    if "probability_recovery_thresholds" in experiment:
+        command.extend(
+            [
+                "--probability_recovery_thresholds",
+                *[str(threshold) for threshold in experiment["probability_recovery_thresholds"]],
+            ]
+        )
+    if MATCH_RESOLUTION:
+        command.append("--match_resolution")
+    return command
 
 
 def main():

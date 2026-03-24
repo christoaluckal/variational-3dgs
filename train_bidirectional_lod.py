@@ -8,6 +8,7 @@
 #
 
 import sys
+import os
 from argparse import ArgumentParser
 from contextlib import nullcontext
 from random import randint
@@ -18,13 +19,16 @@ from arguments import ModelParams, OptimizationParams, PipelineParams
 from gaussian_renderer import forward_k_times, network_gui, render
 from scene import GaussianModel, Scene
 from train import (
+    _append_csv_row,
+    _compute_probability_probe_loss,
+    _initialize_csv_logger,
+    _select_probability_probe_indices,
     WANDB_FOUND,
     _select_fixed_wandb_eval_view,
     prepare_output_and_logger,
     training_report,
 )
 from utils.general_utils import safe_state
-from utils.image_utils import nll_kernel_density
 from utils.loss_utils import l1_loss, ssim
 
 try:
@@ -218,6 +222,7 @@ def training(
     probability_lod_interval,
     probability_lod_min_iterations,
     probability_loss_ema_alpha,
+    probability_lod_probe_num_views,
     probability_lod_increase_ratio,
     probability_lod_increase_patience,
     probability_recovery_thresholds,
@@ -232,6 +237,35 @@ def training(
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+    train_csv_fields = [
+        "iteration",
+        "photometric_loss",
+        "total_loss",
+        "kl_scale_loss",
+        "kl_xyz_loss",
+        "kl_opacity_loss",
+        "probability_regularizer",
+        "probability_probe_loss",
+        "probability_probe_loss_std",
+        "probability_probe_loss_ema",
+        "probability_probe_loss_best_ema",
+        "lod_scale",
+        "lod_mode",
+        "num_gaussians",
+        "iter_time_ms",
+    ]
+    eval_csv_fields = [
+        "iteration",
+        "split",
+        "eval_scale",
+        "num_cameras",
+        "l1",
+        "psnr",
+    ]
+    train_metrics_csv = os.path.join(dataset.model_path, "train_metrics.csv")
+    eval_metrics_csv = os.path.join(dataset.model_path, "eval_metrics.csv")
+    _initialize_csv_logger(train_metrics_csv, train_csv_fields)
+    _initialize_csv_logger(eval_metrics_csv, eval_csv_fields)
     gaussians = GaussianModel(dataset)
     scene = Scene(dataset, gaussians, resolution_scales=resolution_scales)
     gaussians.training_setup(opt)
@@ -247,6 +281,13 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     viewpoint_dict, viewpoint_indices = _build_viewpoint_stacks(scene, resolution_scales)
+    probability_probe_indices = _select_probability_probe_indices(
+        len(viewpoint_dict[finest_scale]), probability_lod_probe_num_views
+    )
+    print(
+        "Using fixed probability probe viewpoints "
+        f"{probability_probe_indices} at finest scale {finest_scale}"
+    )
     lod_state = _init_bidirectional_lod_state(first_iter, resolution_scales)
     fixed_wandb_eval_view = _select_fixed_wandb_eval_view(scene, finest_scale)
     ema_loss_for_log = 0.0
@@ -298,7 +339,6 @@ def training(
 
         current_scale = lod_state["resolution_scales"][lod_state["current_scale_idx"]]
         viewpoint_cam = viewpoint_dict[current_scale][viewpoint_idx]
-        finest_viewpoint_cam = viewpoint_dict[finest_scale][viewpoint_idx]
 
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -320,7 +360,10 @@ def training(
         loss_kl_scal = gaussians.compute_kl_uniform_scal()
         loss_kl_xyz = gaussians.compute_kl_xyz()
         loss_kl_opacity = gaussians.compute_kl_opacity()
-        probability_regularizer = loss_kl_scal + loss_kl_xyz + loss_kl_opacity
+        probability_regularizer = (
+            opt.probability_regularizer_weight
+            * (loss_kl_scal + loss_kl_xyz + loss_kl_opacity)
+        )
         loss += probability_regularizer
 
         gaussians.update_learning_rate(iteration)
@@ -332,15 +375,18 @@ def training(
 
         with torch.no_grad():
             probability_loss = None
+            probability_loss_std = None
             if probability_lod_interval > 0 and iteration % probability_lod_interval == 0:
-                probability_render = forward_k_times(
-                    finest_viewpoint_cam, gaussians, pipe, background
+                probability_loss, probability_loss_samples = _compute_probability_probe_loss(
+                    viewpoint_dict,
+                    finest_scale,
+                    probability_probe_indices,
+                    gaussians,
+                    pipe,
+                    background,
                 )
-                probability_gt = finest_viewpoint_cam.original_image.cuda()
-                probability_loss = nll_kernel_density(
-                    probability_render["comp_rgbs"].permute(1, 2, 3, 0),
-                    probability_render["comp_std"],
-                    probability_gt,
+                probability_loss_std = float(
+                    probability_loss_samples.std(unbiased=False).item()
                 )
                 _maybe_update_bidirectional_lod_scale(
                     iteration,
@@ -356,17 +402,43 @@ def training(
             if WANDB_FOUND and wandb is not None and wandb.run is not None:
                 train_log = {
                     "train/photometric_loss": Ll1.item(),
+                    "train/total_loss": loss.item(),
+                    "train/kl_scale_loss": loss_kl_scal.item(),
                     "train/num_gaussians": gaussians.get_xyz.shape[0],
                     "train/lod_scale": current_scale,
                     "train/lod_mode": lod_state["mode"],
                 }
                 if probability_loss is not None:
-                    train_log["train/probability_loss"] = probability_loss.item()
+                    train_log["train/probability_probe_loss"] = probability_loss.item()
+                if probability_loss_std is not None:
+                    train_log["train/probability_probe_loss_std"] = probability_loss_std
                 if lod_state["ema_probability_loss"] is not None:
-                    train_log["train/probability_loss_ema"] = lod_state["ema_probability_loss"]
+                    train_log["train/probability_probe_loss_ema"] = lod_state["ema_probability_loss"]
                 if lod_state["best_ema_probability_loss"] is not None:
-                    train_log["train/probability_loss_best_ema"] = lod_state["best_ema_probability_loss"]
+                    train_log["train/probability_probe_loss_best_ema"] = lod_state["best_ema_probability_loss"]
                 wandb.log(train_log, step=iteration)
+
+            _append_csv_row(
+                train_metrics_csv,
+                train_csv_fields,
+                {
+                    "iteration": iteration,
+                    "photometric_loss": Ll1.item(),
+                    "total_loss": loss.item(),
+                    "kl_scale_loss": loss_kl_scal.item(),
+                    "kl_xyz_loss": loss_kl_xyz.item(),
+                    "kl_opacity_loss": loss_kl_opacity.item(),
+                    "probability_regularizer": probability_regularizer.item(),
+                    "probability_probe_loss": None if probability_loss is None else probability_loss.item(),
+                    "probability_probe_loss_std": probability_loss_std,
+                    "probability_probe_loss_ema": lod_state["ema_probability_loss"],
+                    "probability_probe_loss_best_ema": lod_state["best_ema_probability_loss"],
+                    "lod_scale": current_scale,
+                    "lod_mode": lod_state["mode"],
+                    "num_gaussians": gaussians.get_xyz.shape[0],
+                    "iter_time_ms": iter_start.elapsed_time(iter_end),
+                },
+            )
 
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
@@ -397,10 +469,13 @@ def training(
                 (pipe, background),
                 finest_scale,
                 current_scale,
+                loss_kl_scal,
                 probability_regularizer,
                 probability_loss,
                 lod_state["ema_probability_loss"],
                 fixed_wandb_eval_view,
+                eval_metrics_csv,
+                eval_csv_fields,
             )
 
             if iteration in saving_iterations:
@@ -468,6 +543,7 @@ if __name__ == "__main__":
     parser.add_argument("--probability_lod_interval", type=int, default=50)
     parser.add_argument("--probability_lod_min_iterations", type=int, default=1000)
     parser.add_argument("--probability_loss_ema_alpha", type=float, default=0.1)
+    parser.add_argument("--probability_lod_probe_num_views", type=int, default=4)
     parser.add_argument(
         "--probability_lod_increase_ratio",
         type=float,
@@ -524,6 +600,7 @@ if __name__ == "__main__":
             args.probability_lod_interval,
             args.probability_lod_min_iterations,
             args.probability_loss_ema_alpha,
+            args.probability_lod_probe_num_views,
             args.probability_lod_increase_ratio,
             args.probability_lod_increase_patience,
             args.probability_recovery_thresholds,

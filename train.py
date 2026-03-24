@@ -360,7 +360,7 @@ def training(
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-
+    print(f"@@@@@@@@@@@@@@@@@ {opt.probability_regularizer_weight}")
     for iteration in range(first_iter, opt.iterations + 1):      
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -404,7 +404,10 @@ def training(
         loss_kl_scal = gaussians.compute_kl_uniform_scal()
         loss_kl_xyz = gaussians.compute_kl_xyz()
         loss_kl_opacity = gaussians.compute_kl_opacity()
-        probability_regularizer = loss_kl_scal + loss_kl_xyz + loss_kl_opacity
+        probability_regularizer = (
+            opt.probability_regularizer_weight
+            * (loss_kl_scal + loss_kl_xyz + loss_kl_opacity)
+        )
 
         loss += probability_regularizer
 
@@ -447,7 +450,8 @@ def training(
                 train_log = {
                     "train/photometric_loss": Ll1.item(),
                     "train/total_loss": loss.item(),
-                    "train/kl_scale_loss": loss_kl_scal.item(),
+                    # "train/kl_scale_loss": loss_kl_scal.item(),
+                    "train/kl_loss": probability_regularizer.item(),
                     "train/num_gaussians": gaussians.get_xyz.shape[0],
                     "train/lod_scale": current_scale,
                 }
